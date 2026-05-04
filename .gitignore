@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# uv
+# (uv.lock IS tracked)
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Data and run artefacts (not redistributable / regenerable)
+data/*
+!data/README.md
+models/
+outputs/
+
+# Plots and other generated artefacts (kept under results/, but ignore re-runs)
+# (results/plots/* IS tracked; uncomment below to ignore future regenerations)
+# results/
+
+# Office lock files
+.~lock.*
+
+# Working files not meant for the repo
+2026-05-03_conversation_and_plan.md
+Presentation_LewishamCouncil_NS.pptx
+InterviewExercise.pdf
+.claude/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
