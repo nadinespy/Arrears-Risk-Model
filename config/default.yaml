@@ -1,0 +1,79 @@
+# Default configuration for the arrears risk model.
+# Override individual values via ARM_-prefixed environment variables
+# (use double underscore as nested delimiter, e.g. ARM_TRAINING__RANDOM_STATE=7).
+
+paths:
+  household_data: data/household_data.xlsx
+  imd_data: data/File_1_IoD2025_Index_of_Multiple_Deprivation.xlsx
+  lewisham_geojson: data/lewisham_lsoa_to_ward_best-fit_lookup.geojson
+  model_dir: models
+  output_dir: outputs
+
+features:
+  # Continuous numeric features.
+  continuous:
+    - monthly_rent
+    - income_after_costs
+    - lha_shortfall_weekly
+    - ben_cap_amount
+    - overpayment_balance
+    - imd_rank
+  # Binary 0/1 features (post-recoding).
+  binary:
+    - disability
+    - fuel_poverty
+    - food_poverty
+    - universal_credit
+    - ctc_takeup
+    - whd_takeup
+    - fsm_eligible
+  # Nominal categorical features (one-hot for LR, label-encoded for XGB).
+  categorical:
+    - tenure_type
+    - economic_status
+    - household_type
+    - ward
+  # Ordinal features with meaningful order (treated as numeric).
+  ordinal:
+    - age_bracket
+    - imd_decile
+  # Features built in src/arrears_risk_model/features.py.
+  engineered:
+    - total_shortfall  # = lha_shortfall_weekly + ben_cap_amount
+  target: arrears_flag
+  # Columns dropped before modelling.
+  excluded:
+    - reference        # household identifier; no predictive meaning
+    - lsoa21cd         # raw geographic code; geographic signal captured via imd_rank/imd_decile
+    - arrears_amount   # would leak the target
+
+imputation:
+  ben_cap_amount_strategy: median  # one of: median, mean, constant, zero
+
+models:
+  lr:
+    C: 1.0
+    penalty: l2
+    solver: lbfgs
+    max_iter: 1000
+    class_weight: balanced  # account for the ~25% / 75% imbalance
+  xgb:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 1.0
+    colsample_bytree: 1.0
+    eval_metric: logloss
+    # scale_pos_weight left null; train.py derives from training-set base rate
+
+training:
+  test_size: 0.2
+  cv_n_splits: 5
+  cv_stratify: true
+  random_state: 42
+
+equity:
+  # Additive weights applied to predicted probability for prioritisation.
+  # Kept small and auditable — see docs/model_card.md for the framing.
+  children: 0.05    # household_type in {lone parent, couple with children} or fsm_eligible
+  disability: 0.05  # disability == 1
