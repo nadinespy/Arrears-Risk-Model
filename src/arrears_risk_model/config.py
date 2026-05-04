@@ -111,14 +111,17 @@ class Imputation(_StrictModel):
 class LRHyperparams(_StrictModel):
     """Logistic regression knobs. Override via ``ARM_MODELS__LR__<FIELD>=...``.
 
-    Field names mirror sklearn's ``LogisticRegression`` constructor.
+    Field names mirror sklearn's ``LogisticRegression`` constructor (1.8+ API).
+    ``penalty`` was removed in sklearn 1.8; use ``l1_ratio`` instead:
+    0.0 = L2, 1.0 = L1, 0 < l1_ratio < 1 = ElasticNet.
     """
 
     C: float = Field(1.0, gt=0, description="Inverse regularisation strength (smaller = more reg.)")
-    penalty: Literal["l1", "l2", "elasticnet"] | None = Field(
-        "l2", description="Regularisation type"
+    l1_ratio: float = Field(
+        0.0, ge=0, le=1,
+        description="Mixing parameter: 0 = L2, 1 = L1, in-between = ElasticNet",
     )
-    solver: str = Field("lbfgs", description="sklearn solver name; must be compatible with penalty")
+    solver: str = Field("lbfgs", description="sklearn solver; lbfgs supports L2 only")
     max_iter: int = Field(1000, gt=0, description="Maximum solver iterations")
     class_weight: str | None = Field(
         "balanced",
