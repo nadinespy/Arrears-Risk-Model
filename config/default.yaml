@@ -46,6 +46,11 @@ features:
     - reference        # household identifier; no predictive meaning
     - lsoa21cd         # raw geographic code; geographic signal captured via imd_rank/imd_decile
     - arrears_amount   # would leak the target
+  # Pre-pipeline columns sliced for descriptive fairness metrics.
+  sensitive_features:
+    - disability
+    - household_type
+    - age_bracket
 
 imputation:
   ben_cap_amount_strategy: median  # one of: median, mean, constant, zero

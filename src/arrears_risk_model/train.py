@@ -63,12 +63,6 @@ from arrears_risk_model.models import make_lr_pipeline, make_xgb_pipeline
 
 logger = get_logger(__name__)
 
-# Features used for fairness slicing. These are the columns in the
-# pre-preprocessed X DataFrame that correspond to protected/sensitive
-# characteristics. Kept here rather than in config because they are a
-# modelling/audit concern, not a tuning knob.
-SENSITIVE_FEATURES = ["disability", "household_type", "age_bracket"]
-
 
 def run_training(config: Config) -> Path:
     """Execute the full training run and return the path to the run directory.
@@ -126,7 +120,7 @@ def run_training(config: Config) -> Path:
         held_out_res = evaluate_held_out(pipeline, x_test, y_test, model_name)
         calibration_res = compute_calibration(pipeline, x_test, y_test, model_name)
         fairness_res = compute_fairness_metrics(
-            pipeline, x_test, y_test, model_name, SENSITIVE_FEATURES
+            pipeline, x_test, y_test, model_name, config.features.sensitive_features
         )
 
         all_results[model_name] = {

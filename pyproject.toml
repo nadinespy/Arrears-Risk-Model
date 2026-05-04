@@ -27,6 +27,7 @@ dependencies = [
 
 [project.scripts]
 arrears-train = "arrears_risk_model.train:main"
+arrears-predict = "arrears_risk_model.predict:main"
 
 [project.urls]
 Repository = "https://github.com/nadinespy/Arrears-Risk-Model"

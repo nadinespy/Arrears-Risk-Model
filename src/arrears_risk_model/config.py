@@ -88,6 +88,9 @@ class Features(_StrictModel):
     engineered: list[str] = Field(description="Features built in features.py from raw inputs")
     target: str = Field(description="Name of the binary target column")
     excluded: list[str] = Field(description="Columns dropped before modelling (IDs, leakage)")
+    sensitive_features: list[str] = Field(
+        description="Pre-pipeline columns sliced for fairness metrics in evaluation"
+    )
 
     @property
     def all_input_features(self) -> list[str]:
