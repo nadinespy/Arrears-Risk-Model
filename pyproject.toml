@@ -25,6 +25,9 @@ dependencies = [
     "xgboost>=3.2.0",
 ]
 
+[project.scripts]
+arrears-train = "arrears_risk_model.train:main"
+
 [project.urls]
 Repository = "https://github.com/nadinespy/Arrears-Risk-Model"
 Issues = "https://github.com/nadinespy/Arrears-Risk-Model/issues"
