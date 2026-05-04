@@ -1,13 +1,27 @@
 """Configuration for the arrears risk model.
 
-Loaded from `config/default.yaml` by default. Environment variables prefixed
-with `ARM_` override YAML values, using `__` as the nested-field delimiter:
+Loaded from ``config/default.yaml`` by default. Environment variables
+prefixed with ``ARM_`` override YAML values.
 
-    ARM_TRAINING__RANDOM_STATE=7  -> overrides config.training.random_state
+**Env-var naming rule.** Take the dotted path of a field in the config
+tree, uppercase it, and join nested levels with double underscores
+(``__``). The result is the env var that overrides that field.
 
-The split between YAML and pydantic exists so values stay easy to edit by
-hand while pydantic gives typed validation, IDE autocomplete in callers,
-and clear errors when the file is malformed.
+Examples::
+
+    config.training.random_state           ARM_TRAINING__RANDOM_STATE=7
+    config.training.test_size              ARM_TRAINING__TEST_SIZE=0.25
+    config.models.xgb.n_estimators         ARM_MODELS__XGB__N_ESTIMATORS=250
+    config.models.lr.C                     ARM_MODELS__LR__C=0.5
+    config.equity.children                 ARM_EQUITY__CHILDREN=0.1
+    config.paths.model_dir                 ARM_PATHS__MODEL_DIR=/tmp/models
+
+The override precedence (highest to lowest) is: explicit kwargs to
+``Config(...)``, then ``ARM_*`` environment variables, then YAML.
+
+The split between YAML and pydantic exists so the file stays easy to
+edit by hand, while pydantic adds typed validation, IDE autocomplete
+in callers, and clear errors when YAML is malformed.
 """
 
 from __future__ import annotations
@@ -37,14 +51,20 @@ class _StrictModel(BaseModel):
 
 
 class Paths(_StrictModel):
-    household_data: Path
-    imd_data: Path
-    lewisham_geojson: Path
-    model_dir: Path
-    output_dir: Path
+    """Filesystem locations. Override via ``ARM_PATHS__<FIELD>=...``.
+
+    Relative paths in YAML are resolved against the repo root by
+    :meth:`resolved` (called by callers that need absolute paths).
+    """
+
+    household_data: Path = Field(description="Raw household_data.xlsx (input)")
+    imd_data: Path = Field(description="Raw IMD25 .xlsx (input)")
+    lewisham_geojson: Path = Field(description="Lewisham LSOA→ward geojson (input)")
+    model_dir: Path = Field(description="Where train.py writes serialised pipelines + metadata")
+    output_dir: Path = Field(description="Where predict.py writes ranked priority lists")
 
     def resolved(self, root: Path = REPO_ROOT) -> Paths:
-        """Return a copy with relative paths resolved against `root`."""
+        """Return a copy with relative paths resolved against ``root``."""
         return Paths(
             **{
                 name: (root / value if not value.is_absolute() else value)
@@ -54,13 +74,20 @@ class Paths(_StrictModel):
 
 
 class Features(_StrictModel):
-    continuous: list[str]
-    binary: list[str]
-    categorical: list[str]
-    ordinal: list[str]
-    engineered: list[str]
-    target: str
-    excluded: list[str]
+    """Which columns the model consumes, grouped by how they're encoded.
+
+    Override via ``ARM_FEATURES__<FIELD>=...``. List-valued fields take a
+    JSON array as the env-var value, e.g.
+    ``ARM_FEATURES__CONTINUOUS='["monthly_rent","income_after_costs"]'``.
+    """
+
+    continuous: list[str] = Field(description="Numeric features used as-is (scaled in LR pipeline)")
+    binary: list[str] = Field(description="Recoded 0/1 features")
+    categorical: list[str] = Field(description="Nominal features (one-hot for LR, ordinal for XGB)")
+    ordinal: list[str] = Field(description="Features with meaningful ordering, treated as numeric")
+    engineered: list[str] = Field(description="Features built in features.py from raw inputs")
+    target: str = Field(description="Name of the binary target column")
+    excluded: list[str] = Field(description="Columns dropped before modelling (IDs, leakage)")
 
     @property
     def all_input_features(self) -> list[str]:
@@ -69,51 +96,85 @@ class Features(_StrictModel):
 
 
 class Imputation(_StrictModel):
-    ben_cap_amount_strategy: Literal["median", "mean", "constant", "zero"] = "median"
-    ben_cap_amount_fill_value: float | None = None  # used only when strategy='constant'
+    """Imputation strategy. Override via ``ARM_IMPUTATION__<FIELD>=...``."""
+
+    ben_cap_amount_strategy: Literal["median", "mean", "constant", "zero"] = Field(
+        "median",
+        description="How to fill missing ben_cap_amount values",
+    )
+    ben_cap_amount_fill_value: float | None = Field(
+        None,
+        description="Constant used when strategy='constant'; ignored otherwise",
+    )
 
 
 class LRHyperparams(_StrictModel):
-    C: float = Field(1.0, gt=0)
-    penalty: Literal["l1", "l2", "elasticnet"] | None = "l2"
-    solver: str = "lbfgs"
-    max_iter: int = Field(1000, gt=0)
-    class_weight: str | None = "balanced"
+    """Logistic regression knobs. Override via ``ARM_MODELS__LR__<FIELD>=...``.
+
+    Field names mirror sklearn's ``LogisticRegression`` constructor.
+    """
+
+    C: float = Field(1.0, gt=0, description="Inverse regularisation strength (smaller = more reg.)")
+    penalty: Literal["l1", "l2", "elasticnet"] | None = Field(
+        "l2", description="Regularisation type"
+    )
+    solver: str = Field("lbfgs", description="sklearn solver name; must be compatible with penalty")
+    max_iter: int = Field(1000, gt=0, description="Maximum solver iterations")
+    class_weight: str | None = Field(
+        "balanced",
+        description="'balanced' adjusts for ~25%/75% target imbalance; None = no reweight",
+    )
 
 
 class XGBHyperparams(_StrictModel):
-    n_estimators: int = Field(100, gt=0)
-    max_depth: int = Field(6, gt=0)
-    learning_rate: float = Field(0.1, gt=0)
-    subsample: float = Field(1.0, gt=0, le=1.0)
-    colsample_bytree: float = Field(1.0, gt=0, le=1.0)
-    scale_pos_weight: float | None = None  # if None, train.py computes from data
-    eval_metric: str = "logloss"
+    """XGBoost knobs. Override via ``ARM_MODELS__XGB__<FIELD>=...``.
+
+    Field names mirror xgboost's ``XGBClassifier`` constructor.
+    """
+
+    n_estimators: int = Field(100, gt=0, description="Number of boosting rounds")
+    max_depth: int = Field(6, gt=0, description="Maximum tree depth")
+    learning_rate: float = Field(0.1, gt=0, description="Shrinkage applied to each round")
+    subsample: float = Field(1.0, gt=0, le=1.0, description="Row subsample ratio per tree")
+    colsample_bytree: float = Field(
+        1.0, gt=0, le=1.0, description="Column subsample ratio per tree"
+    )
+    scale_pos_weight: float | None = Field(
+        None,
+        description="Imbalance multiplier for positive class; None → derived from training data",
+    )
+    eval_metric: str = Field("logloss", description="Booster eval metric")
 
 
 class Models(_StrictModel):
+    """Model-by-model hyperparameters. Override via ``ARM_MODELS__<MODEL>__<FIELD>=...``."""
+
     lr: LRHyperparams = LRHyperparams()
     xgb: XGBHyperparams = XGBHyperparams()
 
 
 class Training(_StrictModel):
-    test_size: float = Field(0.2, gt=0, lt=1)
-    cv_n_splits: int = Field(5, ge=2)
-    cv_stratify: bool = True
-    random_state: int = 42
+    """Train/test split + cross-validation. Override via ``ARM_TRAINING__<FIELD>=...``."""
+
+    test_size: float = Field(
+        0.2, gt=0, lt=1, description="Held-out fraction for final evaluation"
+    )
+    cv_n_splits: int = Field(5, ge=2, description="K for stratified k-fold cross-validation")
+    cv_stratify: bool = Field(True, description="Whether to stratify CV folds by the target")
+    random_state: int = Field(42, description="Seed for split, CV shuffle, and model RNGs")
 
 
 class EquityWeights(_StrictModel):
-    """Additive weights applied to predicted probability for prioritisation.
+    """Additive prioritisation weights. Override via ``ARM_EQUITY__<FIELD>=...``.
 
-    Deliberately small and auditable per the original Section 6.4 framing —
-    not a fairness model, just a transparent value-judgement uplift. The
-    composite score = predicted_probability + sum of weights for criteria
-    the household meets. See docs/model_card.md for discussion.
+    Composite score = predicted_probability + sum of weights for criteria
+    the household meets. Deliberately small and auditable per the
+    original Section 6.4 framing — not a fairness model, a transparent
+    value-judgement uplift. See ``docs/model_card.md``.
     """
 
-    children: float = 0.05
-    disability: float = 0.05
+    children: float = Field(0.05, description="Uplift if household has children")
+    disability: float = Field(0.05, description="Uplift if household has a disabled member")
 
 
 class Config(BaseSettings):
