@@ -46,6 +46,13 @@ Presentation_LewishamCouncil_NS.pptx
 InterviewExercise.pdf
 .claude/
 
+# Scratch references from the prior analytical project (kept on disk
+# locally for reference, but not committed to this repo — their content
+# is redistributed into the new src/, model card, and Word doc).
+arm_analysis.ipynb
+arm_approach.md
+dismissed_future_work.md
+
 # Test / coverage
 .pytest_cache/
 .coverage
