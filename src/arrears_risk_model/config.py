@@ -136,6 +136,8 @@ class XGBHyperparams(_StrictModel):
     """XGBoost knobs. Override via ``ARM_MODELS__XGB__<FIELD>=...``.
 
     Field names mirror xgboost's ``XGBClassifier`` constructor.
+    ``scale_pos_weight`` is handled by :class:`XGBClassifierAutoSPW` at
+    fit time, so it does not appear here.
     """
 
     n_estimators: int = Field(100, gt=0, description="Number of boosting rounds")
@@ -144,10 +146,6 @@ class XGBHyperparams(_StrictModel):
     subsample: float = Field(1.0, gt=0, le=1.0, description="Row subsample ratio per tree")
     colsample_bytree: float = Field(
         1.0, gt=0, le=1.0, description="Column subsample ratio per tree"
-    )
-    scale_pos_weight: float | None = Field(
-        None,
-        description="Imbalance multiplier for positive class; None → derived from training data",
     )
     eval_metric: str = Field("logloss", description="Booster eval metric")
 
@@ -168,6 +166,56 @@ class Training(_StrictModel):
     cv_n_splits: int = Field(5, ge=2, description="K for stratified k-fold cross-validation")
     cv_stratify: bool = Field(True, description="Whether to stratify CV folds by the target")
     random_state: int = Field(42, description="Seed for split, CV shuffle, and model RNGs")
+
+
+class Evaluation(_StrictModel):
+    """Evaluation settings. Override via ``ARM_EVALUATION__<FIELD>=...``.
+
+    Currently holds the decision threshold used to convert predicted
+    probabilities into 0/1 labels for F1, precision, recall, and the
+    fairness slices' selection-rate / TPR / FPR. Calibration uses
+    probabilities directly and is unaffected.
+    """
+
+    threshold: float = Field(
+        0.5,
+        ge=0.0, le=1.0,
+        description="Probability cutoff for held-out and fairness metrics",
+    )
+    calibration_n_bins: int = Field(
+        10, ge=2, description="Bins used by the reliability diagram"
+    )
+
+
+class HyperparameterSearch(_StrictModel):
+    """Grid search settings. Override via ``ARM_HYPERPARAMETER_SEARCH__<FIELD>=...``.
+
+    Grids use sklearn estimator-parameter names *without* the ``clf__`` prefix —
+    the prefix is added by :func:`tune_and_cross_validate` when wrapping the grid for
+    GridSearchCV. Example for LR::
+
+        lr_grid:
+          C: [0.1, 1.0, 10.0]
+
+    becomes ``{"clf__C": [0.1, 1.0, 10.0]}`` internally.
+    """
+
+    enabled: bool = Field(
+        True, description="Run grid search at training time. Set False to use config defaults"
+    )
+    scoring: Literal["roc_auc", "pr_auc", "f1"] = Field(
+        "roc_auc",
+        description="Primary metric used to pick the best configuration during refit",
+    )
+    n_jobs: int = Field(
+        -1, description="Parallel workers across (folds, params); -1 uses all cores"
+    )
+    lr_grid: dict[str, list] = Field(
+        default_factory=dict, description="Grid for LR (sklearn param names, no clf__ prefix)"
+    )
+    xgb_grid: dict[str, list] = Field(
+        default_factory=dict, description="Grid for XGB (sklearn param names, no clf__ prefix)"
+    )
 
 
 class EquityWeights(_StrictModel):
@@ -199,6 +247,8 @@ class Config(BaseSettings):
     imputation: Imputation = Imputation()
     models: Models = Models()
     training: Training = Training()
+    evaluation: Evaluation = Evaluation()
+    hyperparameter_search: HyperparameterSearch = HyperparameterSearch()
     equity: EquityWeights = EquityWeights()
 
     @classmethod
@@ -218,14 +268,54 @@ class Config(BaseSettings):
         )
 
 
+class _IsolatedConfig(Config):
+    """Validation-only sibling of :class:`Config`: no settings sources.
+
+    ``Config`` inherits from ``BaseSettings`` and its ``settings_customise_sources``
+    pulls from environment variables and the shipped YAML alongside any
+    init-supplied values. That's right for the no-arg path, but it makes
+    ``Config.model_validate(data)`` silently merge ``data`` with values
+    from ``default.yaml`` and ``ARM_*`` env vars — concealing missing
+    fields in a custom YAML.
+
+    This subclass keeps every field declaration from ``Config`` but
+    disables every source except the explicit init kwargs, so the
+    validation reflects exactly what the caller supplied.
+    """
+
+    # ``yaml_file=None`` clears the inherited path so pydantic-settings
+    # does not warn about an unused YAML source.
+    model_config = SettingsConfigDict(
+        yaml_file=None,
+        env_prefix="ARM_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
+        extra="forbid",
+    )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
+
+
 def load_config(yaml_path: Path | str | None = None) -> Config:
     """Load and validate configuration.
 
-    With no argument, reads the shipped `config/default.yaml` and applies
-    environment overrides (`ARM_*`).
+    With no argument, reads the shipped ``config/default.yaml`` and applies
+    environment overrides (``ARM_*``).
 
-    With `yaml_path`, loads that file directly and validates. Useful for
-    tests and for swapping configurations between environments.
+    With ``yaml_path``, loads that file *in isolation* — no defaults from
+    ``default.yaml``, no ``ARM_*`` env overrides — and validates against
+    the full schema. A custom YAML missing any required section therefore
+    fails fast with a pydantic ``ValidationError`` rather than silently
+    inheriting whichever defaults happen to ship.
     """
     if yaml_path is None:
         return Config()
@@ -236,4 +326,4 @@ def load_config(yaml_path: Path | str | None = None) -> Config:
 
     with open(yaml_path) as f:
         data = yaml.safe_load(f) or {}
-    return Config.model_validate(data)
+    return _IsolatedConfig(**data)

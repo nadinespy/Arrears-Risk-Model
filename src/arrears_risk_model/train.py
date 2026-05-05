@@ -4,10 +4,13 @@ Orchestration::
 
     load config
     → load & validate data (prepare_dataset)
-    → stratified train/test split
+    → stratified train/test split (held-out test set isolated)
     → for each model (LR, XGBoost):
-          cross-validate on training set
-          fit on full training set
+          if hyperparameter_search.enabled and a grid is configured:
+              GridSearchCV with stratified inner CV → best estimator
+              (already refit on full training set by GridSearchCV)
+          else:
+              cross-validate, then fit on full training set
           evaluate on held-out test set
           compute calibration + fairness metrics
     → save artefacts to models/{timestamp}/
@@ -57,6 +60,7 @@ from arrears_risk_model.evaluate import (
     compute_fairness_metrics,
     cross_validate_model,
     evaluate_held_out,
+    tune_and_cross_validate,
 )
 from arrears_risk_model.logging_config import configure_logging, get_logger
 from arrears_risk_model.models import make_lr_pipeline, make_xgb_pipeline
@@ -94,33 +98,47 @@ def run_training(config: Config) -> Path:
         100 * y_train.mean(), 100 * y_test.mean(),
     )
 
-    # --- Compute class ratio for XGBoost ------------------------------------
-    n_pos = int(y_train.sum())
-    n_neg = int((y_train == 0).sum())
-    spw = n_neg / n_pos if n_pos > 0 else 1.0
-    logger.info("XGB scale_pos_weight derived from training set: %.2f", spw)
-
     # --- Train and evaluate -------------------------------------------------
+    # XGB's scale_pos_weight is recomputed per fit inside XGBClassifierAutoSPW,
+    # so each CV fold derives its own value from its own training portion.
     model_specs = [
-        ("lr",  make_lr_pipeline(config)),
-        ("xgb", make_xgb_pipeline(config, scale_pos_weight=spw)),
+        ("lr",  make_lr_pipeline(config),  config.hyperparameter_search.lr_grid),
+        ("xgb", make_xgb_pipeline(config), config.hyperparameter_search.xgb_grid),
     ]
 
     all_results: dict[str, dict] = {}
     fitted_pipelines: dict[str, object] = {}
+    search_enabled = config.hyperparameter_search.enabled
 
-    for model_name, pipeline in model_specs:
+    for model_name, pipeline, grid in model_specs:
         logger.info("=== %s ===", model_name.upper())
 
-        cv_res = cross_validate_model(pipeline, x_train, y_train, config, model_name)
+        if search_enabled and grid:
+            logger.info(
+                "Tuning %s via grid search (scoring=%s, grid=%s)",
+                model_name, config.hyperparameter_search.scoring, grid,
+            )
+            fitted, cv_res = tune_and_cross_validate(
+                pipeline, x_train, y_train, grid, config, model_name
+            )
+        else:
+            cv_res = cross_validate_model(pipeline, x_train, y_train, config, model_name)
+            logger.info("Fitting %s on full training set", model_name)
+            pipeline.fit(x_train, y_train)
+            fitted = pipeline
 
-        logger.info("Fitting %s on full training set", model_name)
-        pipeline.fit(x_train, y_train)
-
-        held_out_res = evaluate_held_out(pipeline, x_test, y_test, model_name)
-        calibration_res = compute_calibration(pipeline, x_test, y_test, model_name)
+        held_out_res = evaluate_held_out(
+            fitted, x_test, y_test, model_name,
+            threshold=config.evaluation.threshold,
+        )
+        calibration_res = compute_calibration(
+            fitted, x_test, y_test, model_name,
+            n_bins=config.evaluation.calibration_n_bins,
+        )
         fairness_res = compute_fairness_metrics(
-            pipeline, x_test, y_test, model_name, config.features.sensitive_features
+            fitted, x_test, y_test, model_name,
+            config.features.sensitive_features,
+            threshold=config.evaluation.threshold,
         )
 
         all_results[model_name] = {
@@ -129,7 +147,7 @@ def run_training(config: Config) -> Path:
             "calibration": calibration_res,
             "fairness": fairness_res,
         }
-        fitted_pipelines[model_name] = pipeline
+        fitted_pipelines[model_name] = fitted
 
     # --- Save artefacts -----------------------------------------------------
     timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")

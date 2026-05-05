@@ -13,6 +13,7 @@ dist/
 .venv/
 venv/
 env/
+arrears-risk-model-env/
 
 # uv
 # (uv.lock IS tracked)

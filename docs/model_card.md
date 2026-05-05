@@ -46,7 +46,7 @@ The training data covers approximately **14% of Lewisham's ~130,000 dwellings** 
 
 | Group | Columns | Treatment |
 |---|---|---|
-| Continuous | `monthly_rent`, `income_after_costs`, `lha_shortfall_weekly`, `ben_cap_amount`, `overpayment_balance`, `imd_rank` | Median imputation (`ben_cap_amount` only); StandardScaler (LR only) |
+| Continuous | `monthly_rent`, `income_after_costs`, `lha_shortfall_weekly`, `ben_cap_amount`, `overpayment_balance`, `imd_rank` | Zero imputation for missing `ben_cap_amount` (treats "missing" as "no benefit-cap deduction" — consistent with how `total_shortfall` is computed); StandardScaler (LR only) |
 | Binary | `disability`, `fuel_poverty`, `food_poverty`, `universal_credit`, `ctc_takeup`, `whd_takeup`, `fsm_eligible` | Recoded Yes/No → 1/0; passthrough |
 | Categorical | `tenure_type`, `economic_status`, `household_type`, `ward` | OneHotEncoder (LR); OrdinalEncoder (XGB) |
 | Ordinal | `age_bracket`, `imd_decile` | OrdinalEncoder with explicit ordering; StandardScaler (LR only) |

@@ -1,0 +1,132 @@
+digraph arrears_risk_pipeline {
+    rankdir=TB;
+    splines=spline;
+    nodesep=0.45;
+    ranksep=0.7;
+    fontname="Helvetica";
+    bgcolor="white";
+    compound=true;
+    newrank=true;
+    node [fontname="Helvetica", fontsize=10, style="filled,rounded", penwidth=1, color="#37474f"];
+    edge [fontname="Helvetica", fontsize=9, color="#455a64", arrowsize=0.7];
+
+    // ========================= UPSTREAM DATA SOURCING =========================
+
+    subgraph cluster_sourcing {
+        label = "Data sourcing — upstream of this repo";
+        labeljust = "l"; fontsize = 10;
+        style = "rounded,filled"; fillcolor = "#fff3e0"; color = "#fb8c00";
+        node [shape=cylinder, fillcolor="#ffe0b2"];
+        council_db   [label="Council housing\nmanagement system\n(database)"];
+        mhclg        [label="MHCLG\nIndices of Deprivation 2025\n(public download)"];
+        data_eng     [shape=box, fillcolor="#ffe0b2",
+                      label="Data engineering\nscheduled export, ad-hoc query, or\ndirect cloud delivery (S3 / GCS / Azure Blob)\n→ household_data.xlsx"];
+        council_db -> data_eng;
+    }
+
+    // ========================= INPUT FILES =========================
+
+    subgraph cluster_inputs {
+        label = "Source data files (the contract we receive)";
+        labeljust = "l"; fontsize = 10;
+        style = "rounded,filled"; fillcolor = "#eceff1"; color = "#90a4ae";
+        node [shape=cylinder, fillcolor="#bbdefb"];
+        hh_train [label="household_data.xlsx\ntraining snapshot\n17,831 rows"];
+        imd      [label="IMD 2025 (MHCLG)\nstatic, annual\n33,755 LSOAs"];
+        hh_new   [label="household_data.xlsx\nrefreshed monthly export\n(same schema, replaces previous)"];
+    }
+
+    data_eng -> hh_train [label="initial export"];
+    data_eng -> hh_new   [label="monthly refresh", style=dashed];
+    mhclg    -> imd;
+
+    // ========================= TRAINING =========================
+
+    subgraph cluster_pipeline {
+        label = "Training pipeline (arrears-train)"; labeljust="l"; fontsize=10;
+        style="rounded,filled"; fillcolor="#f1f8e9"; color="#7cb342";
+        node [shape=box, fillcolor="#c8e6c9"];
+        ingest   [label="Ingestion + validation\npandera schemas (strict)\nload, IMD join, recode binaries"];
+        features [label="Feature engineering\nsklearn ColumnTransformer\nimputer · scaler · OHE · ordinal\n+ engineered total_shortfall"];
+        tune     [label="Tune + cross-validate\nGridSearchCV (stratified 5-fold)\nLR + XGBoost in parallel"];
+        evaluate [label="Evaluation\nROC-AUC · PR-AUC · F1\ncalibration · Brier\nfairness slices"];
+        ingest -> features -> tune -> evaluate;
+    }
+
+    // ========================= REGISTRY =========================
+
+    subgraph cluster_artefacts {
+        label = "Model registry (file-system)"; labeljust="l"; fontsize=10;
+        style="rounded,filled"; fillcolor="#fff8e1"; color="#fbc02d";
+        run_dir [shape=folder, fillcolor="#bbdefb",
+                 label="models/{timestamp}/\nlr_pipeline.joblib\nxgb_pipeline.joblib\nmetadata.json"];
+    }
+
+    // ========================= INFERENCE =========================
+
+    subgraph cluster_predict {
+        label = "Inference (arrears-predict --input <file>)"; labeljust="l"; fontsize=10;
+        style="rounded,filled"; fillcolor="#f1f8e9"; color="#7cb342";
+        node [shape=box, fillcolor="#c8e6c9"];
+        load_latest [label="Load latest pipeline\nschema-validate input"];
+        score       [label="predict_proba\non non-arrears caseload"];
+        equity      [label="Equity overlay\n+children / +disability\n(config-driven, additive)"];
+        rank        [label="Rank descending\nwrite priority list"];
+        priority    [shape=note, fillcolor="#bbdefb",
+                     label="outputs/{timestamp}_predictions.csv\nreference · proba · score · rank"];
+        load_latest -> score -> equity -> rank -> priority;
+    }
+
+    // ========================= PRODUCTION-ONLY =========================
+
+    subgraph cluster_prod {
+        label = "Production layer — described, not implemented"; labeljust="l"; fontsize=10;
+        style="rounded,filled"; fillcolor="#fff3e0"; color="#fb8c00";
+        node [shape=box, fillcolor="#ffe0b2"];
+        orchestrator  [label="Scheduler\n(Airflow / Prefect / GH Actions cron)\nweekly or monthly retraining"];
+        registry_prod [label="Model registry\n(MLflow / Vertex AI)\nstage promotion + lineage"];
+        drift         [label="Drift + fairness monitoring\nEvidently / WhyLabs\nPSI · KS · sliced metrics"];
+        retrain_gate  [label="Retraining triggers\nbase-rate shift > 5pp\nROC-AUC drop > 0.05\nPSI > 0.25 (≥ 2 features)"];
+        orchestrator  -> registry_prod [style=invis];
+        registry_prod -> drift         [style=invis];
+        drift         -> retrain_gate  [style=invis];
+    }
+
+    // ========================= CROSS-CLUSTER =========================
+
+    hh_train -> ingest;
+    imd      -> ingest;
+    hh_new   -> load_latest [label="--input"];
+    imd      -> load_latest [style=dashed, label="(joined again at inference)"];
+
+    evaluate -> run_dir [label="joblib + metadata"];
+    run_dir  -> load_latest;
+
+    // Production wiring (all dashed = described, not implemented).
+    orchestrator  -> data_eng      [style=dashed, constraint=false, label="schedule\nrefresh"];
+    orchestrator  -> ingest        [style=dashed, constraint=false, label="schedule\ntraining"];
+    orchestrator  -> load_latest   [style=dashed, constraint=false, label="schedule\nscoring"];
+    run_dir       -> registry_prod [style=dashed, constraint=false, label="promote"];
+    registry_prod -> load_latest   [style=dashed, constraint=false, label="fetch production version"];
+    score         -> drift         [style=dashed, constraint=false, label="prediction logs"];
+    drift         -> retrain_gate  [style=dashed];
+    retrain_gate  -> orchestrator  [style=dashed, constraint=false, label="trigger"];
+
+    // Pin ranks across columns for compactness.
+    { rank=same; ingest;       orchestrator; }
+    { rank=same; tune;         registry_prod; }
+    { rank=same; load_latest;  drift; }
+    { rank=same; equity;       retrain_gate; }
+
+    // ========================= LEGEND =========================
+
+    subgraph cluster_legend {
+        label = "Legend"; labeljust="l"; fontsize=9;
+        style="rounded,dashed"; color="#90a4ae";
+        node [shape=box, width=2.0, height=0.32, fontsize=9, style="filled,rounded"];
+        legend_impl [label="Implemented in repo",         fillcolor="#c8e6c9"];
+        legend_desc [label="Described, not implemented",  fillcolor="#ffe0b2"];
+        legend_data [label="Input data / artefact",       fillcolor="#bbdefb"];
+        legend_impl -> legend_desc -> legend_data [style=invis];
+    }
+}

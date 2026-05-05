@@ -34,7 +34,14 @@ def training_config(raw_household_df: pd.DataFrame, raw_imd_df: pd.DataFrame, tm
             "imd_data": imd_path,
             "model_dir": model_dir,
             "output_dir": output_dir,
-        })
+        }),
+        # Shrink the tuning grids so end-to-end tests stay fast on the
+        # 50-row fixture. Tuning is still exercised — just over a 1-cell grid.
+        "hyperparameter_search": config.hyperparameter_search.model_copy(update={
+            "lr_grid": {"C": [1.0]},
+            "xgb_grid": {"max_depth": [3]},
+            "n_jobs": 1,  # avoid nested parallelism with XGBoost on tiny fixtures
+        }),
     })
 
 
@@ -112,6 +119,48 @@ def test_saved_pipelines_are_loadable_and_predict(training_config) -> None:
         proba = pipe.predict_proba(x_df)
         assert proba.shape == (len(x_df), 2)
         assert (proba >= 0).all() and (proba <= 1).all()
+
+
+def test_metadata_records_tuning(training_config) -> None:
+    """When tuning is enabled, cv.tuned is True and best_params is recorded."""
+    run_dir = run_training(training_config)
+    with open(run_dir / "metadata.json") as f:
+        meta = json.load(f)
+
+    for model_name in ("lr", "xgb"):
+        cv = meta["results"][model_name]["cv"]
+        assert cv["tuned"] is True
+        assert cv["best_params"] is not None
+
+
+def test_metadata_no_tuning_when_disabled(training_config) -> None:
+    """Disabling search keeps cv.tuned False and best_params None."""
+    cfg = training_config.model_copy(update={
+        "hyperparameter_search": training_config.hyperparameter_search.model_copy(
+            update={"enabled": False}
+        )
+    })
+    run_dir = run_training(cfg)
+    with open(run_dir / "metadata.json") as f:
+        meta = json.load(f)
+
+    for model_name in ("lr", "xgb"):
+        cv = meta["results"][model_name]["cv"]
+        assert cv["tuned"] is False
+        assert cv["best_params"] is None
+
+
+def test_metadata_uses_config_threshold(training_config) -> None:
+    """held_out / fairness threshold matches config.evaluation.threshold."""
+    cfg = training_config.model_copy(update={
+        "evaluation": training_config.evaluation.model_copy(update={"threshold": 0.3})
+    })
+    run_dir = run_training(cfg)
+    with open(run_dir / "metadata.json") as f:
+        meta = json.load(f)
+    for model_name in ("lr", "xgb"):
+        assert meta["results"][model_name]["held_out"]["threshold"] == 0.3
+        assert meta["results"][model_name]["fairness"]["threshold"] == 0.3
 
 
 def test_metadata_n_train_n_test_sum(training_config) -> None:

@@ -9,6 +9,9 @@ and writes a ranked priority list to ``outputs/``.
     # default model (xgb), default config and paths
     python -m arrears_risk_model.predict
 
+    # score a fresh monthly export without editing config
+    python -m arrears_risk_model.predict --input /data/exports/2026-05-01.xlsx
+
     # use the LR pipeline instead
     python -m arrears_risk_model.predict --model lr
 
@@ -198,6 +201,16 @@ def main() -> None:
         default=None,
         help="Override the directory where the priority list is written",
     )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        default=None,
+        help=(
+            "Override the household_data.xlsx path for this run "
+            "(equivalent to ARM_PATHS__HOUSEHOLD_DATA=...). "
+            "Use this to score a fresh monthly export without editing config."
+        ),
+    )
     args = parser.parse_args()
 
     configure_logging()
@@ -210,6 +223,10 @@ def main() -> None:
     if args.output_dir:
         config = config.model_copy(update={
             "paths": config.paths.model_copy(update={"output_dir": args.output_dir})
+        })
+    if args.input:
+        config = config.model_copy(update={
+            "paths": config.paths.model_copy(update={"household_data": args.input})
         })
 
     run_prediction(config, model_name=args.model)

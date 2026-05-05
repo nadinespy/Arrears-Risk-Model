@@ -25,6 +25,7 @@ from arrears_risk_model.evaluate import (
     compute_fairness_metrics,
     cross_validate_model,
     evaluate_held_out,
+    tune_and_cross_validate,
 )
 from arrears_risk_model.models import make_lr_pipeline
 
@@ -69,6 +70,59 @@ def test_cv_returns_cv_results(config, joined_df: pd.DataFrame) -> None:
     assert 0.0 <= result.pr_auc_mean <= 1.0
     assert 0.0 <= result.f1_mean <= 1.0
     assert result.roc_auc_std >= 0.0
+
+
+# ---------- tune_and_cross_validate ----------
+
+def test_tune_returns_fitted_pipeline_and_results(config, joined_df: pd.DataFrame) -> None:
+    """tune_and_cross_validate returns a fitted best estimator and a CVResults marked tuned."""
+    pipe = make_lr_pipeline(config)
+    y = joined_df["arrears_flag"]
+    x_df = joined_df.drop(columns=["arrears_flag"])
+    grid = {"C": [0.1, 1.0]}
+
+    fitted, cv_res = tune_and_cross_validate(pipe, x_df, y, grid, config, model_name="lr")
+
+    # Fitted: predict_proba works without another fit call.
+    proba = fitted.predict_proba(x_df)
+    assert proba.shape == (len(x_df), 2)
+
+    # CVResults: marked tuned, best_params from grid.
+    assert isinstance(cv_res, CVResults)
+    assert cv_res.tuned is True
+    assert cv_res.best_params is not None
+    assert cv_res.best_params["C"] in grid["C"]
+    # No clf__ prefix leaked through.
+    assert all("clf__" not in k for k in cv_res.best_params)
+    assert 0.0 <= cv_res.roc_auc_mean <= 1.0
+
+
+def test_tune_raises_on_empty_grid(config, joined_df: pd.DataFrame) -> None:
+    """An empty grid is a configuration error, not silently a no-op."""
+    pipe = make_lr_pipeline(config)
+    y = joined_df["arrears_flag"]
+    x_df = joined_df.drop(columns=["arrears_flag"])
+    with pytest.raises(ValueError, match="Empty param_grid"):
+        tune_and_cross_validate(pipe, x_df, y, {}, config, model_name="lr")
+
+
+def test_tune_uses_supplied_scoring(joined_df: pd.DataFrame) -> None:
+    """Tuning runs cleanly under each configurable primary scorer."""
+    base = load_config()
+    config_pr = base.model_copy(update={
+        "hyperparameter_search": base.hyperparameter_search.model_copy(
+            update={"scoring": "pr_auc"}
+        )
+    })
+    pipe = make_lr_pipeline(config_pr)
+    y = joined_df["arrears_flag"]
+    x_df = joined_df.drop(columns=["arrears_flag"])
+
+    _, cv_res = tune_and_cross_validate(
+        pipe, x_df, y, {"C": [0.5, 2.0]}, config_pr, model_name="lr",
+    )
+    assert cv_res.tuned is True
+    assert cv_res.best_params["C"] in [0.5, 2.0]
 
 
 # ---------- evaluate_held_out ----------

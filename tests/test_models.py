@@ -72,10 +72,7 @@ def test_lr_pipeline_serialises(config, x_out_y, tmp_path) -> None:
 def test_xgb_pipeline_fits(config, x_out_y) -> None:
     """x_outGB pipeline fits on synthetic data without error."""
     x_train, y_train = x_out_y
-    n_pos = int(y_train.sum())
-    n_neg = int((y_train == 0).sum())
-    spw = n_neg / n_pos if n_pos > 0 else 1.0
-    pipe = make_xgb_pipeline(config, scale_pos_weight=spw)
+    pipe = make_xgb_pipeline(config)
     pipe.fit(x_train, y_train)
 
 
@@ -105,10 +102,20 @@ def test_xgb_pipeline_serialises(config, x_out_y, tmp_path) -> None:
     np.testing.assert_array_equal(proba_before, proba_after)
 
 
-def test_xgb_scale_pos_weight_override(config, x_out_y) -> None:
-    """scale_pos_weight kwarg is forwarded to the x_outGBClassifier."""
+def test_xgb_scale_pos_weight_recomputed_per_fit(config, x_out_y) -> None:
+    """scale_pos_weight is recomputed from y at every .fit() — ensures
+    each CV fold gets its own value derived from its own training portion."""
     x_train, y_train = x_out_y
-    spw = 3.0
-    pipe = make_xgb_pipeline(config, scale_pos_weight=spw)
+    pipe = make_xgb_pipeline(config)
     pipe.fit(x_train, y_train)
-    assert pipe.named_steps["clf"].scale_pos_weight == spw
+    n_pos = int((y_train == 1).sum())
+    n_neg = int((y_train == 0).sum())
+    expected_full = n_neg / n_pos if n_pos > 0 else 1.0
+    assert pipe.named_steps["clf"].scale_pos_weight == pytest.approx(expected_full)
+
+    # Refit on a balanced subset → scale_pos_weight must change accordingly.
+    pos_idx = y_train.index[y_train == 1][:5]
+    neg_idx = y_train.index[y_train == 0][:5]
+    idx = pos_idx.append(neg_idx)
+    pipe.fit(x_train.loc[idx], y_train.loc[idx])
+    assert pipe.named_steps["clf"].scale_pos_weight == pytest.approx(1.0)

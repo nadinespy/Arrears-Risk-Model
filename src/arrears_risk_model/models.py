@@ -10,15 +10,16 @@ Usage::
 
     config = load_config()
     lr_pipe  = make_lr_pipeline(config)
-    xgb_pipe = make_xgb_pipeline(config, scale_pos_weight=spw)
+    xgb_pipe = make_xgb_pipeline(config)
 
     lr_pipe.fit(X_train, y_train)
     proba = lr_pipe.predict_proba(X_new)[:, 1]
 
-``scale_pos_weight`` for XGBoost is derived from the training-set class
-ratio in ``train.py``; the factory accepts it as an optional override so
-the parameter stays close to where it is computed rather than being
-buried in config.
+Class imbalance for XGBoost is handled by :class:`XGBClassifierAutoSPW`,
+which recomputes ``scale_pos_weight`` from ``y`` at every ``.fit()`` call.
+This guarantees that during cross-validation each fold derives its own
+value from its own training portion — eliminating the small leakage that
+would result from a value computed once on the full training set.
 """
 
 from __future__ import annotations
@@ -29,6 +30,26 @@ from xgboost import XGBClassifier
 
 from arrears_risk_model.config import Config
 from arrears_risk_model.features import make_lr_preprocessor, make_xgb_preprocessor
+
+
+class XGBClassifierAutoSPW(XGBClassifier):
+    """XGBClassifier that recomputes ``scale_pos_weight`` from y at fit time.
+
+    Standard usage of ``scale_pos_weight = n_neg / n_pos`` requires the
+    ratio to be computed before fitting. If the value is computed once
+    on the full training set and then passed into a CV loop, each fold
+    sees a value derived in part from its own validation portion — a
+    small but real leak. Computing it inside ``fit`` makes the value a
+    function of the data the estimator is currently being trained on,
+    which is exactly the contract sklearn's CV expects.
+    """
+
+    def fit(self, x, y, **kwargs):
+        # sklearn's convention is uppercase X; repo uses lowercase for consistency.
+        n_pos = int((y == 1).sum())
+        n_neg = int((y == 0).sum())
+        self.scale_pos_weight = n_neg / n_pos if n_pos > 0 else 1.0
+        return super().fit(x, y, **kwargs)
 
 
 def make_lr_pipeline(config: Config) -> Pipeline:
@@ -51,25 +72,18 @@ def make_lr_pipeline(config: Config) -> Pipeline:
     ])
 
 
-def make_xgb_pipeline(
-    config: Config,
-    scale_pos_weight: float | None = None,
-) -> Pipeline:
+def make_xgb_pipeline(config: Config) -> Pipeline:
     """Return a fitted-ready XGBoost pipeline: preprocessing → XGBClassifier.
 
-    ``scale_pos_weight`` adjusts for class imbalance. When ``None`` here
-    *and* ``None`` in config, XGBoost defaults to 1.0 (no reweighting).
-    ``train.py`` computes ``neg / pos`` from the training split and passes
-    it as the override when config leaves it unset.
+    Class imbalance is handled inside the estimator: see
+    :class:`XGBClassifierAutoSPW`.
     """
-    spw = scale_pos_weight if scale_pos_weight is not None else config.models.xgb.scale_pos_weight
-    clf = XGBClassifier(
+    clf = XGBClassifierAutoSPW(
         n_estimators=config.models.xgb.n_estimators,
         max_depth=config.models.xgb.max_depth,
         learning_rate=config.models.xgb.learning_rate,
         subsample=config.models.xgb.subsample,
         colsample_bytree=config.models.xgb.colsample_bytree,
-        scale_pos_weight=spw,
         eval_metric=config.models.xgb.eval_metric,
         random_state=config.training.random_state,
     )
@@ -79,4 +93,4 @@ def make_xgb_pipeline(
     ])
 
 
-__all__ = ["make_lr_pipeline", "make_xgb_pipeline"]
+__all__ = ["XGBClassifierAutoSPW", "make_lr_pipeline", "make_xgb_pipeline"]

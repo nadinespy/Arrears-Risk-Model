@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -13,6 +14,9 @@ from arrears_risk_model.predict import (
     apply_equity_overlay,
     load_latest_model,
     run_prediction,
+)
+from arrears_risk_model.predict import (
+    main as predict_main,
 )
 from arrears_risk_model.train import run_training
 
@@ -38,7 +42,14 @@ def predict_config(raw_household_df: pd.DataFrame, raw_imd_df: pd.DataFrame, tmp
             "imd_data": imd_path,
             "model_dir": model_dir,
             "output_dir": output_dir,
-        })
+        }),
+        # Same grid-shrinking as in test_train fixture — keeps the
+        # train→predict round trip fast on the synthetic fixture.
+        "hyperparameter_search": config.hyperparameter_search.model_copy(update={
+            "lr_grid": {"C": [1.0]},
+            "xgb_grid": {"max_depth": [3]},
+            "n_jobs": 1,
+        }),
     })
     run_training(config)
     return config
@@ -111,6 +122,40 @@ def test_load_latest_model_returns_pipeline(predict_config) -> None:
     assert run_dir.is_dir()
     assert "trained_at" in metadata
     assert hasattr(pipeline, "predict_proba")
+
+
+def test_input_flag_overrides_household_path(
+    predict_config, raw_household_df: pd.DataFrame, raw_imd_df: pd.DataFrame,
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """`arrears-predict --input <file>` scores the supplied file, not the configured one."""
+    # Trained model + the original household fixture already exist via predict_config.
+    # Build a *different* household file with a known marker reference and point --input at it.
+    fresh = raw_household_df.copy()
+    fresh["reference"] = [f"NEW{i:05d}" for i in range(len(fresh))]
+    fresh_path = tmp_path / "refreshed.xlsx"
+    fresh.to_excel(fresh_path, index=False)
+
+    paths = predict_config.paths.resolved()
+    monkeypatch.setattr(sys, "argv", [
+        "arrears-predict",
+        "--input", str(fresh_path),
+        "--model-dir", str(paths.model_dir),
+        "--output-dir", str(paths.output_dir),
+    ])
+    # Make the IMD path for this run resolvable: the default config points at a path
+    # that doesn't exist in tmp; rewrite via env var.
+    monkeypatch.setenv("ARM_PATHS__IMD_DATA", str(paths.imd_data))
+    monkeypatch.setenv("ARM_PATHS__HOUSEHOLD_DATA", str(paths.household_data))
+    monkeypatch.setenv("ARM_PATHS__LEWISHAM_GEOJSON", str(paths.lewisham_geojson))
+
+    predict_main()
+
+    # The output CSV must reference the NEW* rows from --input, not the old fixture.
+    csvs = sorted(paths.output_dir.glob("*_predictions.csv"))
+    assert csvs, "no predictions CSV produced"
+    df_out = pd.read_csv(csvs[-1])
+    assert df_out["reference"].str.startswith("NEW").all()
 
 
 def test_equity_overlay_children_uplift(joined_df: pd.DataFrame) -> None:

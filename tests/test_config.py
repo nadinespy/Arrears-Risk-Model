@@ -10,7 +10,12 @@ from arrears_risk_model.config import Config, load_config
 
 
 def _minimal_valid_yaml() -> dict:
-    """Smallest YAML payload that satisfies the schema."""
+    """Smallest YAML payload that satisfies the schema in isolation.
+
+    Includes every required field (paths + features, with all required
+    sub-fields). Optional sections like ``training`` or ``models`` are
+    omitted so their defaults from the model definitions apply.
+    """
     return {
         "paths": {
             "household_data": "x.xlsx",
@@ -27,6 +32,7 @@ def _minimal_valid_yaml() -> dict:
             "engineered": [],
             "target": "arrears_flag",
             "excluded": [],
+            "sensitive_features": [],
         },
     }
 
@@ -126,6 +132,37 @@ def test_env_var_nested_override(monkeypatch):
     monkeypatch.setenv("ARM_MODELS__XGB__N_ESTIMATORS", "250")
     config = load_config()
     assert config.models.xgb.n_estimators == 250
+
+
+def test_custom_yaml_does_not_merge_with_default(tmp_path):
+    """A custom YAML missing a required section must fail validation —
+    not silently inherit fields from the shipped default.yaml.
+
+    Regression for a previous bug where ``Config.model_validate(data)``
+    pulled missing fields from the ``YamlConfigSettingsSource`` configured
+    on the class.
+    """
+    data = _minimal_valid_yaml()
+    del data["features"]["sensitive_features"]  # required → must trigger error
+    yaml_path = tmp_path / "incomplete.yaml"
+    yaml_path.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValidationError, match="sensitive_features"):
+        load_config(yaml_path)
+
+
+def test_custom_yaml_does_not_pick_up_env_vars(tmp_path, monkeypatch):
+    """ARM_* overrides apply to the no-arg path, not to a supplied YAML.
+
+    Isolating custom YAML loading is the contract of ``load_config(path)``.
+    """
+    monkeypatch.setenv("ARM_TRAINING__RANDOM_STATE", "9999")
+    data = _minimal_valid_yaml()
+    yaml_path = tmp_path / "x.yaml"
+    yaml_path.write_text(yaml.safe_dump(data))
+
+    config = load_config(yaml_path)
+    # YAML doesn't set training.random_state and the env var must NOT bleed in.
+    assert config.training.random_state == 42  # the dataclass default in Training
 
 
 def test_paths_resolved_against_repo_root(tmp_path):

@@ -35,6 +35,7 @@ Issues = "https://github.com/nadinespy/Arrears-Risk-Model/issues"
 
 [dependency-groups]
 dev = [
+    "ipykernel>=7.2.0",
     "pytest>=8.0",
     "ruff>=0.5",
 ]

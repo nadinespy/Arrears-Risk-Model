@@ -56,8 +56,10 @@ def _add_engineered_features(df: pd.DataFrame) -> pd.DataFrame:
 
     total_shortfall = lha_shortfall_weekly + ben_cap_amount
     Missing ben_cap_amount is treated as 0 (household has no benefit cap).
-    The underlying ben_cap_amount column is kept; it is imputed separately
-    by the continuous-feature imputer downstream.
+    The underlying ben_cap_amount column is kept and imputed separately by
+    the continuous-feature imputer downstream — keep the YAML's
+    ``imputation.ben_cap_amount_strategy`` aligned with this convention
+    (default ``zero``) so the two paths agree on what "missing" means.
     """
     out = df.copy()
     out["total_shortfall"] = out["lha_shortfall_weekly"] + out["ben_cap_amount"].fillna(0.0)
